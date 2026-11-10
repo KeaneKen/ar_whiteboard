@@ -1,10 +1,13 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.Networking;
+using Vuforia;
 
-// Put this on the board Plane (needs its Mesh Collider).
 public class DrawingBoard : MonoBehaviour
 {
     [Serializable]
@@ -13,7 +16,13 @@ public class DrawingBoard : MonoBehaviour
         public List<Vector2> uv = new List<Vector2>();
         public Color color = Color.red;
         public float width = 0.01f;
+        public string id;
     }
+
+    [Serializable] public class NetStroke { public string id; public Color color; public float width; public List<Vector2> points; }
+    [Serializable] public class NetList { public List<NetStroke> items; }
+    [Serializable] public class NetEdit { public List<string> removeIds; public List<NetStroke> add; }
+    class Req { public string method, url, body; }
 
     [Serializable]
     public class BoardData { public List<StrokeData> strokes = new List<StrokeData>(); }
@@ -29,29 +38,37 @@ public class DrawingBoard : MonoBehaviour
     public Texture2D eraserIcon;
 
     [Header("Drawing")]
-    public float lineWidth = 0.01f;     // starting pen size (meters)
+    public float lineWidth = 0.01f;
     public float minPointDistance = 0.005f;
     public float surfaceOffset = 0.005f;
 
     [Header("Eraser")]
-    public float eraseRadius = 0.02f;   // starting eraser radius (meters)
+    public float eraseRadius = 0.02f;
+
+    [Header("Marker")]
+    public bool requireMarker = true;
+    public float keepToolbarSeconds = 10f;
+
+    [Header("Server")]
+    public string serverUrl = "http://192.168.1.10:8080";
+    public string boardId = "imt-lounge";
+    public float pollSeconds = 2f;
 
     [Header("Toolbar position (fraction of screen height from the top)")]
     [Range(0.05f, 0.95f)] public float toolbarY = 0.78f;
 
-    const float PointSpacing = 0.005f;  // strokes are resampled to this spacing (meters) so the eraser can cut them cleanly
+    const float PointSpacing = 0.005f;
 
     static readonly Color[] Palette =
     {
-        new Color(0.90f, 0.05f, 0.10f), // red
-        new Color(0.10f, 0.35f, 0.95f), // blue
-        new Color(0.10f, 0.70f, 0.30f), // green
-        new Color(0.05f, 0.05f, 0.05f), // black
-        new Color(1.00f, 0.55f, 0.05f), // orange
-        new Color(0.55f, 0.25f, 0.85f), // purple
+        new Color(0.90f, 0.05f, 0.10f),
+        new Color(0.10f, 0.35f, 0.95f),
+        new Color(0.10f, 0.70f, 0.30f),
+        new Color(0.05f, 0.05f, 0.05f),
+        new Color(1.00f, 0.55f, 0.05f),
+        new Color(0.55f, 0.25f, 0.85f),
     };
 
-    // Size options (meters) and the dot size (fraction of a cell) that represents each one.
     static readonly float[] PenSizes = { 0.005f, 0.010f, 0.020f, 0.035f };
     static readonly float[] PenDots = { 0.14f, 0.24f, 0.38f, 0.56f };
     static readonly float[] EraserSizes = { 0.010f, 0.020f, 0.040f, 0.070f };
@@ -68,25 +85,36 @@ public class DrawingBoard : MonoBehaviour
     StrokeData currentData;
     readonly List<Vector3> points = new List<Vector3>();
 
-    // strokeObjects[i] is the line for data.strokes[i]
     readonly List<GameObject> strokeObjects = new List<GameObject>();
     BoardData data = new BoardData();
 
-    LineRenderer ring;                  // eraser cursor
+    LineRenderer ring;
     Texture2D roundTex, circleTex;
+
+    ObserverBehaviour observer;
+    bool tracked;
+    float lostAt = -1000f;
+    GUIStyle hintStyle;
+
+    bool ToolbarVisible => !requireMarker || tracked || Time.unscaledTime - lostAt < keepToolbarSeconds;
 
     Color inkColor = Palette[0];
     float penWidth;
     bool eraseMode;
     Popup popup = Popup.None;
     bool erasedThisTouch;
+
+    readonly List<Req> outbox = new List<Req>();
+    readonly HashSet<string> pendingRemove = new HashSet<string>();
+    readonly Dictionary<string, StrokeData> pendingAdd = new Dictionary<string, StrokeData>();
+    bool pumping, fetching;
+    int changeCounter;
+    float nextPoll;
     bool pointerDown;
-    Vector2 pointerGui;                 // pointer in IMGUI coordinates (y runs top-down)
+    Vector2 pointerGui;
     float clearFlashUntil;
 
     string SavePath => Path.Combine(Application.persistentDataPath, "board.json");
-
-    // ------------------------------------------------------------ setup
 
     void Awake()
     {
@@ -96,34 +124,65 @@ public class DrawingBoard : MonoBehaviour
         penWidth = lineWidth;
         roundTex = MakeRounded(128, 30f);
         circleTex = MakeRounded(128, 64f);
+
+        observer = GetComponentInParent<ObserverBehaviour>();
+        if (observer != null)
+        {
+            observer.OnTargetStatusChanged += OnTargetStatus;
+            OnTargetStatus(observer, observer.TargetStatus);
+        }
     }
 
-    void Start() { Load(); }
+    void OnTargetStatus(ObserverBehaviour behaviour, TargetStatus status)
+    {
+        bool now = status.Status == Status.TRACKED || status.Status == Status.EXTENDED_TRACKED;
+        if (tracked && !now) lostAt = Time.unscaledTime;
+        tracked = now;
+    }
+
+    void Start()
+    {
+        Load();
+        nextPoll = Time.unscaledTime + pollSeconds;
+        StartCoroutine(Fetch(true));
+    }
 
     void OnDestroy()
     {
+        if (observer != null) observer.OnTargetStatusChanged -= OnTargetStatus;
         if (roundTex != null) Destroy(roundTex);
         if (circleTex != null) Destroy(circleTex);
     }
-
-    // ------------------------------------------------------------ input
 
     void Update()
     {
         pointerDown = TryGetPointer(out Vector2 screenPos);
         pointerGui = new Vector2(screenPos.x, Screen.height - screenPos.y);
 
+        if (pollSeconds > 0f && Time.unscaledTime >= nextPoll && !pointerDown && current == null)
+        {
+            nextPoll = Time.unscaledTime + pollSeconds;
+            StartCoroutine(Fetch(false));
+        }
+
         if (!pointerDown)
         {
             EndStroke();
             HideRing();
-            if (erasedThisTouch) { Save(); erasedThisTouch = false; }
+            if (erasedThisTouch) { Save(); FlushErase(); erasedThisTouch = false; }
+            return;
+        }
+
+        if (!ToolbarVisible)
+        {
+            EndStroke();
+            HideRing();
+            popup = Popup.None;
             return;
         }
 
         if (OverUI(screenPos)) { HideRing(); return; }
 
-        // Touching the board closes any open pop-up.
         popup = Popup.None;
 
         Ray ray = arCamera.ScreenPointToRay(screenPos);
@@ -144,7 +203,7 @@ public class DrawingBoard : MonoBehaviour
         }
         else
         {
-            EndStroke(); // finger slid off the board
+            EndStroke();
         }
     }
 
@@ -164,9 +223,6 @@ public class DrawingBoard : MonoBehaviour
         return false;
     }
 
-    // ------------------------------------------------------------ board coordinates
-
-    // The Plane mesh is 10 x 10 local units, so these work at any board scale.
     Vector2 WorldToUV(Vector3 world)
     {
         Vector3 l = transform.InverseTransformPoint(world);
@@ -179,10 +235,8 @@ public class DrawingBoard : MonoBehaviour
         return transform.TransformPoint(l) + transform.up * surfaceOffset;
     }
 
-    float BoardW => Mathf.Abs(transform.lossyScale.x) * 10f; // meters
-    float BoardH => Mathf.Abs(transform.lossyScale.z) * 10f; // meters
-
-    // ------------------------------------------------------------ strokes
+    float BoardW => Mathf.Abs(transform.lossyScale.x) * 10f;
+    float BoardH => Mathf.Abs(transform.lossyScale.z) * 10f;
 
     LineRenderer CreateLine(Color c, float width)
     {
@@ -218,7 +272,6 @@ public class DrawingBoard : MonoBehaviour
         return lr.gameObject;
     }
 
-    // Adds points along long segments so strokes have an even point spacing.
     List<Vector2> Densify(List<Vector2> src)
     {
         float wM = BoardW, hM = BoardH;
@@ -240,7 +293,7 @@ public class DrawingBoard : MonoBehaviour
     void StartStroke()
     {
         current = CreateLine(inkColor, penWidth);
-        currentData = new StrokeData { color = inkColor, width = penWidth };
+        currentData = new StrokeData { id = Guid.NewGuid().ToString(), color = inkColor, width = penWidth };
         points.Clear();
     }
 
@@ -264,17 +317,16 @@ public class DrawingBoard : MonoBehaviour
             data.strokes.Add(currentData);
             strokeObjects.Add(current.gameObject);
             Save();
+            Enqueue("POST", StrokesUrl, JsonUtility.ToJson(ToNet(currentData)));
         }
         else
         {
-            Destroy(current.gameObject); // a tap with no movement
+            Destroy(current.gameObject);
         }
         current = null;
         currentData = null;
         points.Clear();
     }
-
-    // ------------------------------------------------------------ eraser (cuts strokes under the circle)
 
     void EraseAt(Vector3 worldHit)
     {
@@ -295,7 +347,6 @@ public class DrawingBoard : MonoBehaviour
             }
             if (!touched) continue;
 
-            // Keep the runs of points outside the circle; each run becomes its own stroke.
             var pieces = new List<List<Vector2>>();
             var run = new List<Vector2>();
             foreach (Vector2 uv in s.uv)
@@ -310,13 +361,15 @@ public class DrawingBoard : MonoBehaviour
             }
             if (run.Count >= 2) pieces.Add(run);
 
+            MarkRemoved(s.id);
             Destroy(strokeObjects[i]);
             strokeObjects.RemoveAt(i);
             data.strokes.RemoveAt(i);
 
             for (int p = 0; p < pieces.Count; p++)
             {
-                var piece = new StrokeData { color = s.color, width = s.width, uv = pieces[p] };
+                var piece = new StrokeData { id = Guid.NewGuid().ToString(), color = s.color, width = s.width, uv = pieces[p] };
+                pendingAdd[piece.id] = piece;
                 data.strokes.Insert(i + p, piece);
                 strokeObjects.Insert(i + p, BuildStroke(piece));
             }
@@ -366,8 +419,6 @@ public class DrawingBoard : MonoBehaviour
         popup = Popup.None;
     }
 
-    // ------------------------------------------------------------ save / load / clear
-
     void Save()
     {
         try { File.WriteAllText(SavePath, JsonUtility.ToJson(data)); }
@@ -387,8 +438,9 @@ public class DrawingBoard : MonoBehaviour
 
         foreach (StrokeData s in data.strokes)
         {
-            if (s.color.a <= 0f) s.color = Palette[0]; // strokes saved before colors existed
-            if (s.width <= 0f) s.width = lineWidth;    // strokes saved before sizes existed
+            if (s.color.a <= 0f) s.color = Palette[0];
+            if (s.width <= 0f) s.width = lineWidth;
+            if (string.IsNullOrEmpty(s.id)) s.id = Guid.NewGuid().ToString();
             s.uv = Densify(s.uv);
             strokeObjects.Add(BuildStroke(s));
         }
@@ -401,15 +453,142 @@ public class DrawingBoard : MonoBehaviour
         strokeObjects.Clear();
         data = new BoardData();
         Save();
+        pendingRemove.Clear();
+        pendingAdd.Clear();
+        Enqueue("DELETE", StrokesUrl, null);
     }
 
-    // ------------------------------------------------------------ toolbar layout
+    string BoardUrl => serverUrl.TrimEnd('/') + "/api/boards/" + UnityWebRequest.EscapeURL(boardId);
+    string StrokesUrl => BoardUrl + "/strokes";
 
-    float BtnSize => Screen.height * 0.08f;
+    static NetStroke ToNet(StrokeData s)
+    {
+        return new NetStroke { id = s.id, color = s.color, width = s.width, points = s.uv };
+    }
+
+    void MarkRemoved(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return;
+        if (!pendingAdd.Remove(id)) pendingRemove.Add(id);
+    }
+
+    void FlushErase()
+    {
+        if (pendingRemove.Count == 0 && pendingAdd.Count == 0) return;
+        var edit = new NetEdit { removeIds = new List<string>(pendingRemove), add = new List<NetStroke>() };
+        foreach (StrokeData piece in pendingAdd.Values) edit.add.Add(ToNet(piece));
+        pendingRemove.Clear();
+        pendingAdd.Clear();
+        Enqueue("POST", BoardUrl + "/edit", JsonUtility.ToJson(edit));
+    }
+
+    void Enqueue(string method, string url, string body)
+    {
+        changeCounter++;
+        outbox.Add(new Req { method = method, url = url, body = body });
+        if (!pumping) StartCoroutine(Pump());
+    }
+
+    IEnumerator Pump()
+    {
+        pumping = true;
+        while (outbox.Count > 0)
+        {
+            Req r = outbox[0];
+            using (var req = new UnityWebRequest(r.url, r.method))
+            {
+                if (r.body != null)
+                {
+                    req.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(r.body));
+                    req.SetRequestHeader("Content-Type", "application/json");
+                }
+                req.downloadHandler = new DownloadHandlerBuffer();
+                req.timeout = 10;
+                yield return req.SendWebRequest();
+
+                if (req.result == UnityWebRequest.Result.Success)
+                {
+                    outbox.RemoveAt(0);
+                }
+                else if (req.responseCode >= 400 && req.responseCode < 500)
+                {
+                    Debug.LogWarning("Server rejected " + r.method + " " + r.url + ": " + req.responseCode);
+                    outbox.RemoveAt(0);
+                }
+                else
+                {
+                    Debug.LogWarning("Server unreachable, will retry: " + req.error);
+                    yield return new WaitForSeconds(3f);
+                }
+            }
+        }
+        pumping = false;
+    }
+
+    IEnumerator Fetch(bool initial)
+    {
+        if (fetching) yield break;
+        fetching = true;
+        int stamp = changeCounter;
+        using (UnityWebRequest req = UnityWebRequest.Get(StrokesUrl))
+        {
+            req.timeout = 10;
+            yield return req.SendWebRequest();
+
+            if (req.result != UnityWebRequest.Result.Success)
+            {
+                if (initial) Debug.LogWarning("Server unreachable, showing the saved copy: " + req.error);
+            }
+            else if (stamp == changeCounter && !pumping && outbox.Count == 0
+                     && !pointerDown && current == null && pendingAdd.Count == 0 && pendingRemove.Count == 0)
+            {
+                NetList list = JsonUtility.FromJson<NetList>("{\"items\":" + req.downloadHandler.text + "}");
+                if (list != null && list.items != null) Reconcile(list.items);
+            }
+        }
+        fetching = false;
+    }
+
+    void Reconcile(List<NetStroke> server)
+    {
+        var serverIds = new HashSet<string>();
+        foreach (NetStroke n in server) serverIds.Add(n.id);
+
+        var localIds = new HashSet<string>();
+        bool changed = false;
+        for (int i = data.strokes.Count - 1; i >= 0; i--)
+        {
+            if (!serverIds.Contains(data.strokes[i].id))
+            {
+                if (strokeObjects[i] != null) Destroy(strokeObjects[i]);
+                strokeObjects.RemoveAt(i);
+                data.strokes.RemoveAt(i);
+                changed = true;
+            }
+            else localIds.Add(data.strokes[i].id);
+        }
+
+        foreach (NetStroke n in server)
+        {
+            if (localIds.Contains(n.id) || n.points == null || n.points.Count < 2) continue;
+            var st = new StrokeData
+            {
+                id = n.id,
+                color = n.color.a > 0f ? n.color : Palette[0],
+                width = n.width > 0f ? n.width : lineWidth,
+                uv = n.points
+            };
+            data.strokes.Add(st);
+            strokeObjects.Add(BuildStroke(st));
+            changed = true;
+        }
+        if (changed) Save();
+    }
+
+    float BtnSize => Screen.height * (Screen.width > Screen.height ? 0.14f : 0.08f);
     float Gap => BtnSize * 0.25f;
     float BtnGap => BtnSize * 0.45f;
 
-    // index: 0 = pen/color, 1 = eraser, 2 = trash
     Rect Btn(int index)
     {
         float s = BtnSize, g = BtnGap;
@@ -418,11 +597,9 @@ public class DrawingBoard : MonoBehaviour
         return new Rect(left + index * (s + g), Screen.height * toolbarY - s / 2f, s, s);
     }
 
-    // Pop-up cells: sized so a row of 6 always fits on screen.
     float CellSize => Mathf.Min(BtnSize * 0.8f, Screen.width * 0.86f / 7f);
     float CellGap => CellSize * 0.3f;
 
-    // row 0 sits just above the toolbar; higher rows stack upward.
     Rect Item(int row, int j, int count)
     {
         float s = CellSize, g = CellGap;
@@ -432,7 +609,6 @@ public class DrawingBoard : MonoBehaviour
         return new Rect(left + j * (s + g), bottomRowY - row * (s + g), s, s);
     }
 
-    // Pen pop-up: row 0 = colors, row 1 = sizes. Eraser pop-up: row 0 = sizes.
     int PopupRows => popup == Popup.Pen ? 2 : 1;
     int PopupWidest => popup == Popup.Pen ? Palette.Length : EraserSizes.Length;
 
@@ -463,27 +639,21 @@ public class DrawingBoard : MonoBehaviour
         return false;
     }
 
-    // ------------------------------------------------------------ toolbar drawing
-
-    // GUI colors are treated as linear in a Linear color-space project, which washes them out.
     static Color Lin(Color c)
     {
         return QualitySettings.activeColorSpace == ColorSpace.Linear ? c.linear : c;
     }
 
-    // Rounded rectangle with true circular corners at any size (9-slice of the rounded texture).
-    // 'corner' is the corner radius in pixels; by default a quarter of the shorter side.
     void DrawRound(Rect r, Color c, float corner = -1f)
     {
         float cs = corner > 0f ? corner : Mathf.Min(r.width, r.height) * 0.24f;
         cs = Mathf.Min(cs, Mathf.Min(r.width, r.height) / 2f);
 
-        // Snap to whole pixels so the 9 slices meet exactly (no hairline seams).
         float x0 = Mathf.Round(r.xMin), x3 = Mathf.Round(r.xMax);
         float y0 = Mathf.Round(r.yMin), y3 = Mathf.Round(r.yMax);
         cs = Mathf.Round(cs);
         float x1 = x0 + cs, x2 = x3 - cs, y1 = y0 + cs, y2 = y3 - cs;
-        const float q = 0.25f; // corner size inside the 128px texture (radius 30px fits in 32px)
+        const float q = 0.25f;
 
         Color old = GUI.color;
         GUI.color = Lin(c);
@@ -499,7 +669,7 @@ public class DrawingBoard : MonoBehaviour
 
                 float u0 = col == 0 ? 0f : col == 1 ? q : 1f - q;
                 float u1 = col == 0 ? q : col == 1 ? 1f - q : 1f;
-                float v1 = row == 0 ? 1f : row == 1 ? 1f - q : q;   // texture v runs bottom-up
+                float v1 = row == 0 ? 1f : row == 1 ? 1f - q : q;
                 float v0 = row == 0 ? 1f - q : row == 1 ? q : 0f;
 
                 GUI.DrawTextureWithTexCoords(Rect.MinMaxRect(dx0, dy0, dx1, dy1), roundTex,
@@ -527,14 +697,13 @@ public class DrawingBoard : MonoBehaviour
         GUI.color = old;
     }
 
-    // One row of size options; returns the index tapped, or -1.
     int DrawSizeRow(int row, float[] sizes, float[] dots, float selectedSize)
     {
         int tapped = -1;
         int n = sizes.Length, widest = PopupWidest;
         Rect first = Item(row, 0, widest), last = Item(row, widest - 1, widest);
         float full = last.xMax - first.xMin;
-        float cw = (full - (n - 1) * CellGap) / n;   // stretch cells to fill the tray width
+        float cw = (full - (n - 1) * CellGap) / n;
         for (int i = 0; i < n; i++)
         {
             Rect cell = new Rect(first.xMin + i * (cw + CellGap), first.y, cw, CellSize);
@@ -547,12 +716,32 @@ public class DrawingBoard : MonoBehaviour
         return tapped;
     }
 
+    void DrawScanHint()
+    {
+        if (hintStyle == null)
+        {
+            hintStyle = new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold };
+            hintStyle.normal.textColor = Color.white;
+        }
+        hintStyle.fontSize = Mathf.RoundToInt(BtnSize * 0.36f);
+
+        float w = Mathf.Min(Screen.width * 0.8f, BtnSize * 6f);
+        float h = BtnSize * 1.1f;
+        Rect box = new Rect((Screen.width - w) / 2f, (Screen.height - h) / 2f, w, h);
+        DrawRound(box, IdleBg, h * 0.3f);
+        GUI.Label(box, "Scan the marker", hintStyle);
+    }
+
     void OnGUI()
     {
         if (roundTex == null) return;
 
-        // Pen: selected when not erasing. Shows the ink color. First tap selects it and opens
-        // the color + size pop-up; tapping it again closes the pop-up.
+        if (!ToolbarVisible)
+        {
+            DrawScanHint();
+            return;
+        }
+
         Rect pen = Btn(0);
         DrawRound(pen, eraseMode ? IdleBg : ActiveBg);
         DrawCircle(Inset(pen, 0.19f), Color.white);
@@ -563,7 +752,6 @@ public class DrawingBoard : MonoBehaviour
             else popup = popup == Popup.Pen ? Popup.None : Popup.Pen;
         }
 
-        // Eraser: selecting it deselects the pen and opens its size pop-up.
         Rect er = Btn(1);
         DrawIconButton(er, eraserIcon, eraseMode ? ActiveBg : IdleBg);
         if (GUI.Button(er, GUIContent.none, GUIStyle.none))
@@ -572,7 +760,6 @@ public class DrawingBoard : MonoBehaviour
             else popup = popup == Popup.Eraser ? Popup.None : Popup.Eraser;
         }
 
-        // Trash: a one-shot button. Red while pressed and for a moment after, never stays selected.
         Rect tr = Btn(2);
         bool pressing = pointerDown && tr.Contains(pointerGui);
         bool flash = Time.unscaledTime < clearFlashUntil;
@@ -590,7 +777,6 @@ public class DrawingBoard : MonoBehaviour
 
         if (popup == Popup.Pen)
         {
-            // Row 0: colors
             for (int i = 0; i < Palette.Length; i++)
             {
                 Rect sr = Item(0, i, Palette.Length);
@@ -599,7 +785,6 @@ public class DrawingBoard : MonoBehaviour
                 DrawCircle(Inset(sr, selected ? 0.14f : 0.06f), Palette[i]);
                 if (GUI.Button(sr, GUIContent.none, GUIStyle.none)) inkColor = Palette[i];
             }
-            // Row 1: pen sizes
             int t = DrawSizeRow(1, PenSizes, PenDots, penWidth);
             if (t >= 0) penWidth = PenSizes[t];
         }
@@ -610,7 +795,6 @@ public class DrawingBoard : MonoBehaviour
         }
     }
 
-    // White rounded-rectangle texture with antialiased edges (radius = size / 2 gives a circle).
     static Texture2D MakeRounded(int size, float radius)
     {
         var t = new Texture2D(size, size, TextureFormat.RGBA32, false);
