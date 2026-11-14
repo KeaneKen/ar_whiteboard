@@ -132,6 +132,7 @@ GameObject:
   - component: {fileID: 200544705}
   - component: {fileID: 200544704}
   - component: {fileID: 200544708}
+  - component: {fileID: 200544709}
   m_Layer: 0
   m_Name: Plane
   m_TagString: Untagged
@@ -253,10 +254,28 @@ MonoBehaviour:
   minPointDistance: 0.005
   surfaceOffset: 0.005
   eraseRadius: 0.02
-  serverUrl: http://192.168.1.11:8080
+  requireMarker: 1
+  keepToolbarSeconds: 10
+  serverUrl: https://poster-freedom-rapids-baker.trycloudflare.com
   boardId: imt-lounge
   pollSeconds: 2
   toolbarY: 0.78
+--- !u!114 &200544709
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 200544703}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3a314d594066941439c43f390b38f670, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BoardObjects
+  shelfUV: {x: 0.33, y: 0.12}
+  holdSeconds: 0.3
+  liftHeight: 0.03
+  maxNotes: 20
 --- !u!1 &314373300
 GameObject:
   m_ObjectHideFlags: 0

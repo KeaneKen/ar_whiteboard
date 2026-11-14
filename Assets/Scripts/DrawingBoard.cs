@@ -80,6 +80,8 @@ public class DrawingBoard : MonoBehaviour
     static readonly Color CellBg = new Color(1f, 1f, 1f, 0.14f);
 
     Collider boardCollider;
+    BoardObjects objects;
+    Texture2D noteIcon, pinIcon, rulerIcon;
     Transform strokeParent;
     LineRenderer current;
     StrokeData currentData;
@@ -97,6 +99,73 @@ public class DrawingBoard : MonoBehaviour
     GUIStyle hintStyle;
 
     bool ToolbarVisible => !requireMarker || tracked || Time.unscaledTime - lostAt < keepToolbarSeconds;
+
+    public bool BoardActive => ToolbarVisible;
+    public bool MarkerVisible => tracked;
+    public bool InputBlocked { get; private set; }
+    public bool UIHidden { get; set; }
+    public float UiUnit => BtnSize;
+
+    public static Color GuiColor(Color c) { return Lin(c); }
+    public void GuiRound(Rect r, Color c, float corner) { DrawRound(r, c, corner); }
+    public void GuiCircle(Rect r, Color c) { DrawCircle(r, c); }
+
+    public void GuiIcon(Rect r, Texture2D icon, Color tint)
+    {
+        if (icon == null) return;
+        Color old = GUI.color;
+        GUI.color = Lin(tint);
+        GUI.DrawTexture(r, icon, ScaleMode.ScaleToFit, true);
+        GUI.color = old;
+    }
+
+    public static List<Vector2> Smooth(List<Vector2> points, int iterations)
+    {
+        List<Vector2> p = points;
+        for (int it = 0; it < iterations; it++)
+        {
+            if (p.Count < 3) break;
+            var r = new List<Vector2>(p.Count * 2);
+            r.Add(p[0]);
+            for (int i = 0; i < p.Count - 1; i++)
+            {
+                r.Add(Vector2.Lerp(p[i], p[i + 1], 0.25f));
+                r.Add(Vector2.Lerp(p[i], p[i + 1], 0.75f));
+            }
+            r.Add(p[p.Count - 1]);
+            p = r;
+        }
+        return p;
+    }
+
+    List<Vector2> Thin(List<Vector2> src, float minMeters)
+    {
+        if (src.Count < 3) return src;
+        float wM = BoardW, hM = BoardH;
+        var result = new List<Vector2>(src.Count) { src[0] };
+        for (int i = 1; i < src.Count - 1; i++)
+        {
+            Vector2 last = result[result.Count - 1];
+            float len = new Vector2((src[i].x - last.x) * wM, (src[i].y - last.y) * hM).magnitude;
+            if (len >= minMeters) result.Add(src[i]);
+        }
+        result.Add(src[src.Count - 1]);
+        return result;
+    }
+
+    public bool IsOverUI(Vector2 screenPos) { return OverUI(screenPos); }
+
+    public void BlockInput(bool on)
+    {
+        InputBlocked = on;
+        if (!on) return;
+        if (current != null) Destroy(current.gameObject);
+        current = null;
+        currentData = null;
+        points.Clear();
+        HideRing();
+        popup = Popup.None;
+    }
 
     Color inkColor = Palette[0];
     float penWidth;
@@ -119,6 +188,11 @@ public class DrawingBoard : MonoBehaviour
     void Awake()
     {
         boardCollider = GetComponent<Collider>();
+        objects = GetComponent<BoardObjects>();
+        Application.targetFrameRate = 60;
+        noteIcon = Resources.Load<Texture2D>("BoardIcons/note");
+        pinIcon = Resources.Load<Texture2D>("BoardIcons/pin");
+        rulerIcon = Resources.Load<Texture2D>("BoardIcons/ruler");
         strokeParent = transform.parent != null ? transform.parent : transform;
         if (arCamera == null) arCamera = Camera.main;
         penWidth = lineWidth;
@@ -181,6 +255,8 @@ public class DrawingBoard : MonoBehaviour
             return;
         }
 
+        if (InputBlocked) { HideRing(); return; }
+
         if (OverUI(screenPos)) { HideRing(); return; }
 
         popup = Popup.None;
@@ -196,10 +272,11 @@ public class DrawingBoard : MonoBehaviour
         }
 
         HideRing();
-        if (hitBoard)
+        bool overNote = hitBoard && objects != null && objects.IsOverNote(WorldToUV(hit.point));
+        if (hitBoard && !overNote)
         {
             if (current == null) StartStroke();
-            AddPoint(hit.point);
+            AddPoint(objects != null ? objects.SnapToRuler(hit.point) : hit.point);
         }
         else
         {
@@ -312,7 +389,7 @@ public class DrawingBoard : MonoBehaviour
         if (current == null) return;
         if (currentData.uv.Count >= 2)
         {
-            currentData.uv = Densify(currentData.uv);
+            currentData.uv = Densify(Thin(Smooth(currentData.uv, 2), PointSpacing * 0.6f));
             SetLine(current, currentData.uv);
             data.strokes.Add(currentData);
             strokeObjects.Add(current.gameObject);
@@ -456,6 +533,8 @@ public class DrawingBoard : MonoBehaviour
         pendingRemove.Clear();
         pendingAdd.Clear();
         Enqueue("DELETE", StrokesUrl, null);
+
+        if (objects != null) objects.ResetAll();
     }
 
     string BoardUrl => serverUrl.TrimEnd('/') + "/api/boards/" + UnityWebRequest.EscapeURL(boardId);
@@ -609,7 +688,7 @@ public class DrawingBoard : MonoBehaviour
         return new Rect(left + j * (s + g), bottomRowY - row * (s + g), s, s);
     }
 
-    int PopupRows => popup == Popup.Pen ? 2 : 1;
+    int PopupRows => popup == Popup.Pen ? (objects != null ? 3 : 2) : 1;
     int PopupWidest => popup == Popup.Pen ? Palette.Length : EraserSizes.Length;
 
     Rect PopupTray()
@@ -734,7 +813,7 @@ public class DrawingBoard : MonoBehaviour
 
     void OnGUI()
     {
-        if (roundTex == null) return;
+        if (roundTex == null || UIHidden) return;
 
         if (!ToolbarVisible)
         {
@@ -787,6 +866,42 @@ public class DrawingBoard : MonoBehaviour
             }
             int t = DrawSizeRow(1, PenSizes, PenDots, penWidth);
             if (t >= 0) penWidth = PenSizes[t];
+
+            if (objects != null)
+            {
+                int n = BoardObjects.NoteTints.Length;
+                int total = n + 2;
+                for (int i = 0; i < total; i++)
+                {
+                    Rect cell = Item(2, i, total);
+                    if (i < n)
+                    {
+                        if (noteIcon != null) GuiIcon(Inset(cell, 0.04f), noteIcon, BoardObjects.NoteTints[i]);
+                        else DrawRound(Inset(cell, 0.08f), BoardObjects.NoteTints[i], CellSize * 0.12f);
+                    }
+                    else if (i == n)
+                    {
+                        if (pinIcon != null) GuiIcon(Inset(cell, 0.02f), pinIcon, BoardObjects.MagnetColor);
+                        else DrawCircle(Inset(cell, 0.22f), BoardObjects.MagnetColor);
+                    }
+                    else
+                    {
+                        Rect bar = new Rect(cell.x + cell.width * 0.04f, cell.center.y - cell.height * 0.15f,
+                                            cell.width * 0.92f, cell.height * 0.30f);
+                        if (rulerIcon != null) GuiIcon(cell, rulerIcon, BoardObjects.RulerColor);
+                        else DrawRound(bar, BoardObjects.RulerColor, CellSize * 0.06f);
+                    }
+
+                    if (GUI.Button(cell, GUIContent.none, GUIStyle.none))
+                    {
+                        popup = Popup.None;
+                        if (i < n) objects.BeginPlacing((int)BoardObjects.Kind.Note, i);
+                        else if (i == n) objects.BeginPlacing((int)BoardObjects.Kind.Magnet, 0);
+                        else objects.BeginPlacing((int)BoardObjects.Kind.Ruler, 0);
+                        break;
+                    }
+                }
+            }
         }
         else
         {
