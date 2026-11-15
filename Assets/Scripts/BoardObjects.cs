@@ -335,6 +335,7 @@ public class BoardObjects : MonoBehaviour
             {
                 denied = true;
                 SetLook(target, Look.HeldOffBoard);
+                board.Feedback.Deny();
                 return;
             }
             BeginHold(sp);
@@ -371,6 +372,7 @@ public class BoardObjects : MonoBehaviour
         Obj placed = Build(item);
         Refresh();
         Save();
+        board.Feedback.Drop();
 
         mode = Mode.Normal;
         if (placingKind == (int)Kind.Note) OpenEditor(placed);
@@ -480,6 +482,7 @@ public class BoardObjects : MonoBehaviour
     void BeginHold(Vector2 sp)
     {
         board.BlockInput(true);
+        board.Feedback.Grab();
         phase = Phase.Holding;
 
         Vector2 itemUV = new Vector2(target.item.u, target.item.v);
@@ -552,6 +555,7 @@ public class BoardObjects : MonoBehaviour
         }
         o.busy = false;
         SetLook(o, Look.Available);
+        board.Feedback.Drop();
         Refresh();
         Save();
     }
@@ -793,7 +797,9 @@ public class BoardObjects : MonoBehaviour
         {
             GUI.Label(r, fallback, buttonStyle);
         }
-        return GUI.Button(r, GUIContent.none, GUIStyle.none);
+        if (!GUI.Button(r, GUIContent.none, GUIStyle.none)) return false;
+        board.Feedback.Click();
+        return true;
     }
 
     void OnGUI()

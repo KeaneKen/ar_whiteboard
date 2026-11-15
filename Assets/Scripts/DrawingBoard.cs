@@ -81,6 +81,7 @@ public class DrawingBoard : MonoBehaviour
 
     Collider boardCollider;
     BoardObjects objects;
+    BoardFeedback feedback;
     Texture2D noteIcon, pinIcon, rulerIcon;
     Transform strokeParent;
     LineRenderer current;
@@ -104,6 +105,14 @@ public class DrawingBoard : MonoBehaviour
     public bool MarkerVisible => tracked;
     public bool InputBlocked { get; private set; }
     public bool UIHidden { get; set; }
+    public BoardFeedback Feedback => feedback;
+
+    bool Tap(Rect r)
+    {
+        if (!GUI.Button(r, GUIContent.none, GUIStyle.none)) return false;
+        feedback.Click();
+        return true;
+    }
     public float UiUnit => BtnSize;
 
     public static Color GuiColor(Color c) { return Lin(c); }
@@ -189,6 +198,8 @@ public class DrawingBoard : MonoBehaviour
     {
         boardCollider = GetComponent<Collider>();
         objects = GetComponent<BoardObjects>();
+        feedback = GetComponent<BoardFeedback>();
+        if (feedback == null) feedback = gameObject.AddComponent<BoardFeedback>();
         Application.targetFrameRate = 60;
         noteIcon = Resources.Load<Texture2D>("BoardIcons/note");
         pinIcon = Resources.Load<Texture2D>("BoardIcons/pin");
@@ -211,6 +222,7 @@ public class DrawingBoard : MonoBehaviour
     {
         bool now = status.Status == Status.TRACKED || status.Status == Status.EXTENDED_TRACKED;
         if (tracked && !now) lostAt = Time.unscaledTime;
+        if (!tracked && now && feedback != null && Time.unscaledTime - lostAt > 1.5f) feedback.Poof();
         tracked = now;
     }
 
@@ -382,6 +394,7 @@ public class DrawingBoard : MonoBehaviour
         currentData.uv.Add(WorldToUV(worldHit));
         current.positionCount = points.Count;
         current.SetPosition(points.Count - 1, p);
+        feedback.DrawTick();
     }
 
     void EndStroke()
@@ -451,6 +464,7 @@ public class DrawingBoard : MonoBehaviour
                 strokeObjects.Insert(i + p, BuildStroke(piece));
             }
             erasedThisTouch = true;
+            feedback.DrawTick();
         }
     }
 
@@ -790,7 +804,7 @@ public class DrawingBoard : MonoBehaviour
             DrawRound(cell, selected ? ActiveBg : CellBg, CellSize * 0.25f);
             float d = CellSize * dots[i];
             DrawCircle(new Rect(cell.center.x - d / 2f, cell.center.y - d / 2f, d, d), Color.white);
-            if (GUI.Button(cell, GUIContent.none, GUIStyle.none)) tapped = i;
+            if (Tap(cell)) tapped = i;
         }
         return tapped;
     }
@@ -825,7 +839,7 @@ public class DrawingBoard : MonoBehaviour
         DrawRound(pen, eraseMode ? IdleBg : ActiveBg);
         DrawCircle(Inset(pen, 0.19f), Color.white);
         DrawCircle(Inset(pen, 0.26f), inkColor);
-        if (GUI.Button(pen, GUIContent.none, GUIStyle.none))
+        if (Tap(pen))
         {
             if (eraseMode) { SetEraseMode(false); popup = Popup.Pen; }
             else popup = popup == Popup.Pen ? Popup.None : Popup.Pen;
@@ -833,7 +847,7 @@ public class DrawingBoard : MonoBehaviour
 
         Rect er = Btn(1);
         DrawIconButton(er, eraserIcon, eraseMode ? ActiveBg : IdleBg);
-        if (GUI.Button(er, GUIContent.none, GUIStyle.none))
+        if (Tap(er))
         {
             if (!eraseMode) { SetEraseMode(true); popup = Popup.Eraser; }
             else popup = popup == Popup.Eraser ? Popup.None : Popup.Eraser;
@@ -843,7 +857,7 @@ public class DrawingBoard : MonoBehaviour
         bool pressing = pointerDown && tr.Contains(pointerGui);
         bool flash = Time.unscaledTime < clearFlashUntil;
         DrawIconButton(tr, trashIcon, (pressing || flash) ? DangerBg : IdleBg);
-        if (GUI.Button(tr, GUIContent.none, GUIStyle.none))
+        if (Tap(tr))
         {
             Clear();
             popup = Popup.None;
@@ -862,7 +876,7 @@ public class DrawingBoard : MonoBehaviour
                 bool selected = Palette[i] == inkColor;
                 if (selected) DrawCircle(sr, Color.white);
                 DrawCircle(Inset(sr, selected ? 0.14f : 0.06f), Palette[i]);
-                if (GUI.Button(sr, GUIContent.none, GUIStyle.none)) inkColor = Palette[i];
+                if (Tap(sr)) inkColor = Palette[i];
             }
             int t = DrawSizeRow(1, PenSizes, PenDots, penWidth);
             if (t >= 0) penWidth = PenSizes[t];
@@ -892,7 +906,7 @@ public class DrawingBoard : MonoBehaviour
                         else DrawRound(bar, BoardObjects.RulerColor, CellSize * 0.06f);
                     }
 
-                    if (GUI.Button(cell, GUIContent.none, GUIStyle.none))
+                    if (Tap(cell))
                     {
                         popup = Popup.None;
                         if (i < n) objects.BeginPlacing((int)BoardObjects.Kind.Note, i);
