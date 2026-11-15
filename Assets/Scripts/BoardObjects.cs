@@ -375,8 +375,16 @@ public class BoardObjects : MonoBehaviour
         board.Feedback.Drop();
 
         mode = Mode.Normal;
-        if (placingKind == (int)Kind.Note) OpenEditor(placed);
-        else waitRelease = true;
+        if (placingKind == (int)Kind.Note)
+        {
+            board.Tasks.Report(BoardTasks.Step.PlaceNote);
+            OpenEditor(placed);
+        }
+        else
+        {
+            waitRelease = true;
+            ReportPins();
+        }
     }
 
     void EndPlacing()
@@ -443,6 +451,18 @@ public class BoardObjects : MonoBehaviour
                 Mathf.Abs(o.item.v - note.item.v) * h <= NoteSize / 2f) return true;
         }
         return false;
+    }
+
+    void ReportPins()
+    {
+        foreach (Obj o in objects)
+        {
+            if (o.item.kind == (int)Kind.Note && IsPinned(o))
+            {
+                board.Tasks.Report(BoardTasks.Step.PinNote);
+                return;
+            }
+        }
     }
 
     void Raise(Obj o)
@@ -558,6 +578,7 @@ public class BoardObjects : MonoBehaviour
         board.Feedback.Drop();
         Refresh();
         Save();
+        ReportPins();
     }
 
     IEnumerator Fall(Obj o)
@@ -648,6 +669,8 @@ public class BoardObjects : MonoBehaviour
             else
             {
                 RebuildContent(o);
+                if (!string.IsNullOrWhiteSpace(o.item.text) || o.item.strokes.Count > 0)
+                    board.Tasks.Report(BoardTasks.Step.WriteNote);
             }
         }
         Save();

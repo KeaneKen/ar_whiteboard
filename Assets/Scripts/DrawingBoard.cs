@@ -82,6 +82,7 @@ public class DrawingBoard : MonoBehaviour
     Collider boardCollider;
     BoardObjects objects;
     BoardFeedback feedback;
+    BoardTasks tasks;
     Texture2D noteIcon, pinIcon, rulerIcon;
     Transform strokeParent;
     LineRenderer current;
@@ -106,6 +107,7 @@ public class DrawingBoard : MonoBehaviour
     public bool InputBlocked { get; private set; }
     public bool UIHidden { get; set; }
     public BoardFeedback Feedback => feedback;
+    public BoardTasks Tasks => tasks;
 
     bool Tap(Rect r)
     {
@@ -200,6 +202,8 @@ public class DrawingBoard : MonoBehaviour
         objects = GetComponent<BoardObjects>();
         feedback = GetComponent<BoardFeedback>();
         if (feedback == null) feedback = gameObject.AddComponent<BoardFeedback>();
+        tasks = GetComponent<BoardTasks>();
+        if (tasks == null) tasks = gameObject.AddComponent<BoardTasks>();
         Application.targetFrameRate = 60;
         noteIcon = Resources.Load<Texture2D>("BoardIcons/note");
         pinIcon = Resources.Load<Texture2D>("BoardIcons/pin");
@@ -408,6 +412,7 @@ public class DrawingBoard : MonoBehaviour
             strokeObjects.Add(current.gameObject);
             Save();
             Enqueue("POST", StrokesUrl, JsonUtility.ToJson(ToNet(currentData)));
+            tasks.Report(BoardTasks.Step.Draw);
         }
         else
         {
@@ -726,6 +731,7 @@ public class DrawingBoard : MonoBehaviour
     bool OverUI(Vector2 screenPos)
     {
         Vector2 p = new Vector2(screenPos.x, Screen.height - screenPos.y);
+        if (tasks != null && tasks.Covers(p)) return true;
         Rect bar = Rect.MinMaxRect(Btn(0).xMin, Btn(0).yMin, Btn(2).xMax, Btn(2).yMax);
         if (Grow(bar, Gap).Contains(p)) return true;
         if (popup != Popup.None && Grow(PopupTray(), CellGap * 0.5f).Contains(p)) return true;
