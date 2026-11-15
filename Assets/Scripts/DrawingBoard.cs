@@ -83,6 +83,9 @@ public class DrawingBoard : MonoBehaviour
     BoardObjects objects;
     BoardFeedback feedback;
     BoardTasks tasks;
+    BoardSettings settings;
+    Texture2D settingsIcon, aimIcon;
+    bool aiming;
     Texture2D noteIcon, pinIcon, rulerIcon;
     Transform strokeParent;
     LineRenderer current;
@@ -164,7 +167,24 @@ public class DrawingBoard : MonoBehaviour
         return result;
     }
 
-    public bool IsOverUI(Vector2 screenPos) { return OverUI(screenPos); }
+    public bool AimMode { get; set; }
+    public int ToolbarSide { get; set; }
+
+    public bool IsOverUI(Vector2 screenPos)
+    {
+        if (settings != null && settings.IsOpen) return true;
+        Vector2 gui = new Vector2(screenPos.x, Screen.height - screenPos.y);
+        if (AimMode && AimRect().Contains(gui)) return true;
+        return OverUI(screenPos);
+    }
+
+    Rect AimRect()
+    {
+        float s = BtnSize * 1.35f;
+        float margin = BtnSize * 0.3f;
+        float x = ToolbarSide < 0 ? margin : Screen.width - s - margin;
+        return new Rect(x, Screen.height * toolbarY - BtnSize * 2.4f, s, s);
+    }
 
     public void BlockInput(bool on)
     {
@@ -204,6 +224,10 @@ public class DrawingBoard : MonoBehaviour
         if (feedback == null) feedback = gameObject.AddComponent<BoardFeedback>();
         tasks = GetComponent<BoardTasks>();
         if (tasks == null) tasks = gameObject.AddComponent<BoardTasks>();
+        settings = GetComponent<BoardSettings>();
+        if (settings == null) settings = gameObject.AddComponent<BoardSettings>();
+        settingsIcon = Resources.Load<Texture2D>("BoardIcons/settings");
+        aimIcon = Resources.Load<Texture2D>("BoardIcons/draw");
         Application.targetFrameRate = 60;
         noteIcon = Resources.Load<Texture2D>("BoardIcons/note");
         pinIcon = Resources.Load<Texture2D>("BoardIcons/pin");
@@ -248,6 +272,10 @@ public class DrawingBoard : MonoBehaviour
     {
         pointerDown = TryGetPointer(out Vector2 screenPos);
         pointerGui = new Vector2(screenPos.x, Screen.height - screenPos.y);
+
+        aiming = AimMode && pointerDown && ToolbarVisible && !InputBlocked && popup == Popup.None
+                 && AimRect().Contains(pointerGui);
+        if (aiming) screenPos = new Vector2(Screen.width / 2f, Screen.height / 2f);
 
         if (pollSeconds > 0f && Time.unscaledTime >= nextPoll && !pointerDown && current == null)
         {
@@ -690,8 +718,10 @@ public class DrawingBoard : MonoBehaviour
     Rect Btn(int index)
     {
         float s = BtnSize, g = BtnGap;
-        float total = 3f * s + 2f * g;
+        float total = 4f * s + 3f * g;
         float left = (Screen.width - total) / 2f;
+        if (ToolbarSide < 0) left = s * 0.3f;
+        else if (ToolbarSide > 0) left = Screen.width - total - s * 0.3f;
         return new Rect(left + index * (s + g), Screen.height * toolbarY - s / 2f, s, s);
     }
 
@@ -732,7 +762,7 @@ public class DrawingBoard : MonoBehaviour
     {
         Vector2 p = new Vector2(screenPos.x, Screen.height - screenPos.y);
         if (tasks != null && tasks.Covers(p)) return true;
-        Rect bar = Rect.MinMaxRect(Btn(0).xMin, Btn(0).yMin, Btn(2).xMax, Btn(2).yMax);
+        Rect bar = Rect.MinMaxRect(Btn(0).xMin, Btn(0).yMin, Btn(3).xMax, Btn(3).yMax);
         if (Grow(bar, Gap).Contains(p)) return true;
         if (popup != Popup.None && Grow(PopupTray(), CellGap * 0.5f).Contains(p)) return true;
         return false;
@@ -868,6 +898,32 @@ public class DrawingBoard : MonoBehaviour
             Clear();
             popup = Popup.None;
             clearFlashUntil = Time.unscaledTime + 0.3f;
+        }
+
+        Rect gear = Btn(3);
+        DrawIconButton(gear, settingsIcon, IdleBg);
+        if (settingsIcon == null)
+        {
+            float dot = gear.width * 0.12f;
+            for (int k = -1; k <= 1; k++)
+                DrawCircle(new Rect(gear.center.x + k * dot * 1.9f - dot / 2f, gear.center.y - dot / 2f, dot, dot), Color.white);
+        }
+        if (Tap(gear))
+        {
+            popup = Popup.None;
+            settings.Open();
+        }
+
+        if (AimMode && popup == Popup.None)
+        {
+            Rect aim = AimRect();
+            DrawCircle(aim, aiming ? ActiveBg : IdleBg);
+            GuiIcon(Inset(aim, 0.27f), aimIcon, Color.white);
+
+            float outer = BtnSize * 0.2f, inner = BtnSize * 0.11f;
+            Vector2 mid = new Vector2(Screen.width / 2f, Screen.height / 2f);
+            DrawCircle(new Rect(mid.x - outer / 2f, mid.y - outer / 2f, outer, outer), new Color(0f, 0f, 0f, 0.7f));
+            DrawCircle(new Rect(mid.x - inner / 2f, mid.y - inner / 2f, inner, inner), eraseMode ? Color.white : inkColor);
         }
 
         if (popup == Popup.None) return;

@@ -50,6 +50,8 @@ public class BoardObjects : MonoBehaviour
     public int maxMagnets = 8;
     public int maxRulers = 3;
 
+    [HideInInspector] public bool reduceMotion;
+
     const float Thickness = 0.004f;
     const float BaseHeight = 0.010f;
     const float LayerStep = 0.0005f;
@@ -566,7 +568,7 @@ public class BoardObjects : MonoBehaviour
     {
         o.busy = true;
         Vector2 uv = new Vector2(o.item.u, o.item.v);
-        const float duration = 0.12f;
+        float duration = reduceMotion ? 0f : 0.12f;
         for (float t = 0f; t < duration; t += Time.deltaTime)
         {
             float k = 1f - t / duration;
@@ -586,7 +588,7 @@ public class BoardObjects : MonoBehaviour
         o.busy = true;
         SetLook(o, Look.Available);
         Vector3 start = o.body.position;
-        const float duration = 0.5f;
+        float duration = reduceMotion ? 0f : 0.5f;
         for (float t = 0f; t < duration; t += Time.deltaTime)
         {
             Vector3 p = start - transform.forward * (0.5f * FallGravity * t * t);

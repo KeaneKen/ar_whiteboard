@@ -142,19 +142,19 @@ public class BoardTasks : MonoBehaviour
             Rect dot = new Rect(panel.x + pad, panel.center.y - unit * 0.2f, unit * 0.4f, unit * 0.4f);
             DrawMark(dot, true, false);
             GUI.Label(new Rect(dot.xMax + pad * 0.6f, panel.y, panel.width - dot.width - pad * 2.6f, panel.height),
-                      "All done!", titleStyle);
+                    "All done!", titleStyle);
             return;
         }
 
         if (collapsed)
         {
             GUI.Label(new Rect(panel.x + pad, panel.y, panel.width - 2f * pad, panel.height),
-                      "Tasks " + DoneCount() + "/" + Titles.Length, titleStyle);
+                    "Tasks " + DoneCount() + "/" + Titles.Length, titleStyle);
         }
         else
         {
             GUI.Label(new Rect(panel.x + pad, panel.y, panel.width - 2f * pad, unit * 0.62f),
-                      "Try this  " + DoneCount() + "/" + Titles.Length, titleStyle);
+                    "Try this  " + DoneCount() + "/" + Titles.Length, titleStyle);
 
             int next = NextStep();
             float rowH = unit * 0.46f;
@@ -177,7 +177,7 @@ public class BoardTasks : MonoBehaviour
             if (next >= 0)
             {
                 GUI.Label(new Rect(panel.x + pad, y, panel.width - 2f * pad, panel.yMax - y - pad * 0.3f),
-                          Hints[next], hintStyle);
+                        Hints[next], hintStyle);
             }
         }
 
@@ -197,7 +197,7 @@ public class BoardTasks : MonoBehaviour
             {
                 float inset = r.width * 0.2f;
                 board.GuiIcon(new Rect(r.x + inset, r.y + inset, r.width - 2f * inset, r.height - 2f * inset),
-                              checkIcon, Color.white);
+                            checkIcon, Color.white);
             }
             return;
         }

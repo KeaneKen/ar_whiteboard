@@ -184,7 +184,7 @@ public class BoardFeedback : MonoBehaviour
         try
         {
             using (AndroidJavaObject effect = effectClass.CallStatic<AndroidJavaObject>(
-                       "createOneShot", (long)milliseconds, Mathf.Clamp(amplitude, 1, 255)))
+                    "createOneShot", (long)milliseconds, Mathf.Clamp(amplitude, 1, 255)))
             {
                 vibrator.Call("vibrate", effect);
             }
