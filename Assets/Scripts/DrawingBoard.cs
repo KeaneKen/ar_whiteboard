@@ -96,7 +96,13 @@ public class DrawingBoard : MonoBehaviour
     BoardData data = new BoardData();
 
     LineRenderer ring;
-    Texture2D roundTex, circleTex;
+    Texture2D roundTex, circleTex, triangleTex;
+
+    const int ShapeCount = 4;
+    int shapeKind;
+    bool shapeStroke;
+    Vector2 shapeStart;
+    float shapeSize;
 
     ObserverBehaviour observer;
     bool tracked;
@@ -193,6 +199,7 @@ public class DrawingBoard : MonoBehaviour
         if (current != null) Destroy(current.gameObject);
         current = null;
         currentData = null;
+        shapeStroke = false;
         points.Clear();
         HideRing();
         popup = Popup.None;
@@ -237,6 +244,7 @@ public class DrawingBoard : MonoBehaviour
         penWidth = lineWidth;
         roundTex = MakeRounded(128, 30f);
         circleTex = MakeRounded(128, 64f);
+        triangleTex = MakeTriangle(128);
 
         observer = GetComponentInParent<ObserverBehaviour>();
         if (observer != null)
@@ -266,6 +274,7 @@ public class DrawingBoard : MonoBehaviour
         if (observer != null) observer.OnTargetStatusChanged -= OnTargetStatus;
         if (roundTex != null) Destroy(roundTex);
         if (circleTex != null) Destroy(circleTex);
+        if (triangleTex != null) Destroy(triangleTex);
     }
 
     void Update()
@@ -319,8 +328,15 @@ public class DrawingBoard : MonoBehaviour
         bool overNote = hitBoard && objects != null && objects.IsOverNote(WorldToUV(hit.point));
         if (hitBoard && !overNote)
         {
-            if (current == null) StartStroke();
-            AddPoint(objects != null ? objects.SnapToRuler(hit.point) : hit.point);
+            if (shapeKind != 0)
+            {
+                DragShape(hit.point);
+            }
+            else
+            {
+                if (current == null) StartStroke();
+                AddPoint(objects != null ? objects.SnapToRuler(hit.point) : hit.point);
+            }
         }
         else
         {
@@ -411,6 +427,66 @@ public class DrawingBoard : MonoBehaviour
         return result;
     }
 
+    List<Vector2> BuildShape(int kind, Vector2 a, Vector2 b, out float size)
+    {
+        float w = BoardW, h = BoardH;
+        Vector2 p0 = new Vector2(a.x * w, a.y * h);
+        Vector2 d = new Vector2(b.x * w, b.y * h) - p0;
+        if (kind == 1 || kind == 3)
+        {
+            float side = Mathf.Max(Mathf.Abs(d.x), Mathf.Abs(d.y));
+            d = new Vector2(Mathf.Sign(d.x) * side, Mathf.Sign(d.y) * side);
+        }
+        size = Mathf.Max(Mathf.Abs(d.x), Mathf.Abs(d.y));
+        Vector2 p1 = p0 + d;
+
+        var m = new List<Vector2>();
+        if (kind == 1)
+        {
+            m.Add(p0);
+            m.Add(new Vector2(p1.x, p0.y));
+            m.Add(p1);
+            m.Add(new Vector2(p0.x, p1.y));
+            m.Add(p0);
+        }
+        else if (kind == 2)
+        {
+            m.Add(p0);
+            m.Add(new Vector2(p1.x, p0.y));
+            m.Add(new Vector2((p0.x + p1.x) / 2f, p1.y));
+            m.Add(p0);
+        }
+        else
+        {
+            Vector2 c = (p0 + p1) / 2f;
+            float r = Mathf.Abs(d.x) / 2f;
+            const int segments = 48;
+            for (int i = 0; i <= segments; i++)
+            {
+                float ang = i * 2f * Mathf.PI / segments;
+                m.Add(c + new Vector2(Mathf.Cos(ang), Mathf.Sin(ang)) * r);
+            }
+        }
+
+        var uv = new List<Vector2>(m.Count);
+        for (int i = 0; i < m.Count; i++) uv.Add(new Vector2(m[i].x / w, m[i].y / h));
+        return uv;
+    }
+
+    void DragShape(Vector3 worldHit)
+    {
+        Vector2 uv = WorldToUV(worldHit);
+        if (current == null)
+        {
+            StartStroke();
+            shapeStroke = true;
+            shapeStart = uv;
+        }
+        currentData.uv = BuildShape(shapeKind, shapeStart, uv, out shapeSize);
+        SetLine(current, currentData.uv);
+        feedback.DrawTick();
+    }
+
     void StartStroke()
     {
         current = CreateLine(inkColor, penWidth);
@@ -432,15 +508,21 @@ public class DrawingBoard : MonoBehaviour
     void EndStroke()
     {
         if (current == null) return;
-        if (currentData.uv.Count >= 2)
+        bool isShape = shapeStroke;
+        shapeStroke = false;
+        bool valid = currentData.uv.Count >= 2 && (!isShape || shapeSize >= 0.02f);
+        if (valid)
         {
-            currentData.uv = Densify(Thin(Smooth(currentData.uv, 2), PointSpacing * 0.6f));
+            currentData.uv = isShape
+                ? Densify(currentData.uv)
+                : Densify(Thin(Smooth(currentData.uv, 2), PointSpacing * 0.6f));
             SetLine(current, currentData.uv);
             data.strokes.Add(currentData);
             strokeObjects.Add(current.gameObject);
             Save();
             Enqueue("POST", StrokesUrl, JsonUtility.ToJson(ToNet(currentData)));
             tasks.Report(BoardTasks.Step.Draw);
+            if (isShape) feedback.Drop();
         }
         else
         {
@@ -737,7 +819,7 @@ public class DrawingBoard : MonoBehaviour
         return new Rect(left + j * (s + g), bottomRowY - row * (s + g), s, s);
     }
 
-    int PopupRows => popup == Popup.Pen ? (objects != null ? 3 : 2) : 1;
+    int PopupRows => popup == Popup.Pen ? (objects != null ? 4 : 3) : 1;
     int PopupWidest => popup == Popup.Pen ? Palette.Length : EraserSizes.Length;
 
     Rect PopupTray()
@@ -824,6 +906,30 @@ public class DrawingBoard : MonoBehaviour
         GUI.color = Color.white;
         GUI.DrawTexture(Inset(r, 0.18f), icon, ScaleMode.ScaleToFit, true);
         GUI.color = old;
+    }
+
+    void DrawShapeIcon(Rect r, int kind)
+    {
+        if (kind == 0)
+        {
+            if (aimIcon != null) GuiIcon(Inset(r, -0.1f), aimIcon, Color.white);
+            else DrawRound(new Rect(r.x, r.center.y - r.height * 0.08f, r.width, r.height * 0.16f), Color.white);
+        }
+        else if (kind == 1)
+        {
+            DrawRound(r, Color.white, r.width * 0.12f);
+        }
+        else if (kind == 2)
+        {
+            Color old = GUI.color;
+            GUI.color = Lin(Color.white);
+            GUI.DrawTexture(r, triangleTex);
+            GUI.color = old;
+        }
+        else
+        {
+            DrawCircle(r, Color.white);
+        }
     }
 
     int DrawSizeRow(int row, float[] sizes, float[] dots, float selectedSize)
@@ -943,13 +1049,21 @@ public class DrawingBoard : MonoBehaviour
             int t = DrawSizeRow(1, PenSizes, PenDots, penWidth);
             if (t >= 0) penWidth = PenSizes[t];
 
+            for (int i = 0; i < ShapeCount; i++)
+            {
+                Rect cell = Item(2, i, ShapeCount);
+                DrawRound(cell, shapeKind == i ? ActiveBg : CellBg, CellSize * 0.25f);
+                DrawShapeIcon(Inset(cell, 0.24f), i);
+                if (Tap(cell)) shapeKind = i;
+            }
+
             if (objects != null)
             {
                 int n = BoardObjects.NoteTints.Length;
                 int total = n + 2;
                 for (int i = 0; i < total; i++)
                 {
-                    Rect cell = Item(2, i, total);
+                    Rect cell = Item(3, i, total);
                     if (i < n)
                     {
                         if (noteIcon != null) GuiIcon(Inset(cell, 0.04f), noteIcon, BoardObjects.NoteTints[i]);
@@ -984,6 +1098,28 @@ public class DrawingBoard : MonoBehaviour
             int t = DrawSizeRow(0, EraserSizes, EraserDots, eraseRadius);
             if (t >= 0) eraseRadius = EraserSizes[t];
         }
+    }
+
+    static Texture2D MakeTriangle(int size)
+    {
+        var t = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        t.wrapMode = TextureWrapMode.Clamp;
+        t.filterMode = FilterMode.Bilinear;
+        var px = new Color32[size * size];
+        for (int y = 0; y < size; y++)
+        {
+            float v = (y + 0.5f) / size;
+            for (int x = 0; x < size; x++)
+            {
+                float u = (x + 0.5f) / size;
+                float side = (0.5f * (1f - v) - Mathf.Abs(u - 0.5f)) * size * 0.894f;
+                float a = Mathf.Min(Mathf.Clamp01(side + 0.5f), Mathf.Clamp01(v * size));
+                px[y * size + x] = new Color32(255, 255, 255, (byte)(a * 255f));
+            }
+        }
+        t.SetPixels32(px);
+        t.Apply();
+        return t;
     }
 
     static Texture2D MakeRounded(int size, float radius)

@@ -256,7 +256,7 @@ MonoBehaviour:
   eraseRadius: 0.02
   requireMarker: 1
   keepToolbarSeconds: 10
-  serverUrl: https://poster-freedom-rapids-baker.trycloudflare.com
+  serverUrl: https://relation-scenarios-cams-airport.trycloudflare.com/
   boardId: imt-lounge
   pollSeconds: 2
   toolbarY: 0.78
@@ -272,10 +272,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3a314d594066941439c43f390b38f670, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::BoardObjects
-  shelfUV: {x: 0.33, y: 0.12}
   holdSeconds: 0.3
   liftHeight: 0.03
   maxNotes: 20
+  maxMagnets: 8
+  maxRulers: 3
+  reduceMotion: 0
 --- !u!1 &314373300
 GameObject:
   m_ObjectHideFlags: 0
