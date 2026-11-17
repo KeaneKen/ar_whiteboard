@@ -21,10 +21,10 @@ public class BoardTasks : MonoBehaviour
 
     static readonly string[] Hints =
     {
-        "Drag your finger across the board.",
-        "Open the color button and pick a note.",
-        "Tap the note, then type or draw.",
-        "Pick the pin, then tap on your note.",
+        "Drag one finger across the board to draw. The pen is the first button on the toolbar.",
+        "Tap the pen (first toolbar button). In the top row of the popup, pick a coloured note, then tap the board.",
+        "Type or draw in the note that opens. To open it again later, tap the note on the board.",
+        "Tap the pen again. In the top row, pick the pin next to the notes, then tap on top of your note.",
     };
 
     static readonly Color PanelBg = new Color(0.10f, 0.10f, 0.10f, 0.82f);
@@ -107,7 +107,7 @@ public class BoardTasks : MonoBehaviour
         if (collapsed) return new Rect(margin, top, unit * 2.4f, unit * 0.6f);
 
         float width = Mathf.Min(Screen.width - 2f * margin, unit * 5.4f);
-        float height = unit * (0.62f + 0.46f * Titles.Length + 0.62f);
+        float height = unit * (0.62f + 0.46f * Titles.Length + 0.95f);
         return new Rect(margin, top, width, height);
     }
 
@@ -142,19 +142,19 @@ public class BoardTasks : MonoBehaviour
             Rect dot = new Rect(panel.x + pad, panel.center.y - unit * 0.2f, unit * 0.4f, unit * 0.4f);
             DrawMark(dot, true, false);
             GUI.Label(new Rect(dot.xMax + pad * 0.6f, panel.y, panel.width - dot.width - pad * 2.6f, panel.height),
-                    "All done!", titleStyle);
+                      "All done! The board is yours.", titleStyle);
             return;
         }
 
         if (collapsed)
         {
             GUI.Label(new Rect(panel.x + pad, panel.y, panel.width - 2f * pad, panel.height),
-                    "Tasks " + DoneCount() + "/" + Titles.Length, titleStyle);
+                      "Tasks " + DoneCount() + "/" + Titles.Length, titleStyle);
         }
         else
         {
             GUI.Label(new Rect(panel.x + pad, panel.y, panel.width - 2f * pad, unit * 0.62f),
-                    "Try this  " + DoneCount() + "/" + Titles.Length, titleStyle);
+                      "Try this  " + DoneCount() + "/" + Titles.Length, titleStyle);
 
             int next = NextStep();
             float rowH = unit * 0.46f;
@@ -177,7 +177,7 @@ public class BoardTasks : MonoBehaviour
             if (next >= 0)
             {
                 GUI.Label(new Rect(panel.x + pad, y, panel.width - 2f * pad, panel.yMax - y - pad * 0.3f),
-                        Hints[next], hintStyle);
+                          Hints[next], hintStyle);
             }
         }
 
@@ -197,7 +197,7 @@ public class BoardTasks : MonoBehaviour
             {
                 float inset = r.width * 0.2f;
                 board.GuiIcon(new Rect(r.x + inset, r.y + inset, r.width - 2f * inset, r.height - 2f * inset),
-                            checkIcon, Color.white);
+                              checkIcon, Color.white);
             }
             return;
         }
