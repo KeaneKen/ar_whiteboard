@@ -256,7 +256,7 @@ MonoBehaviour:
   eraseRadius: 0.02
   requireMarker: 1
   keepToolbarSeconds: 10
-  serverUrl: https://relation-scenarios-cams-airport.trycloudflare.com/
+  serverUrl: 'https://extensions-hill-pose-voting.trycloudflare.com '
   boardId: imt-lounge
   pollSeconds: 2
   toolbarY: 0.78
